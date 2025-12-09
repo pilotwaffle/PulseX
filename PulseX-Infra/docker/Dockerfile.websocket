@@ -1,0 +1,287 @@
+# Multi-stage Dockerfile for PulseX WebSocket Service
+# Optimized for real-time communication and high-concurrency
+
+# Stage 1: Base image with system dependencies
+FROM node:18-alpine AS base
+LABEL maintainer="PulseX DevOps <devops@pulsex.com>"
+LABEL version="1.0.0"
+LABEL description="PulseX WebSocket Service - Real-time communication hub"
+
+# Install system dependencies
+RUN apk add --no-cache \
+    curl \
+    dumb-init \
+    tini \
+    ca-certificates \
+    tzdata \
+    && rm -rf /var/cache/apk/*
+
+# Set timezone
+ENV TZ=UTC
+
+# Set work directory
+WORKDIR /app
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S pulsex -u 1001
+
+# Stage 2: Development/Builder stage
+FROM base AS development
+ENV NODE_ENV=development
+
+# Copy package files
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# Install all dependencies (including devDependencies)
+RUN npm ci --include=dev && npm cache clean --force
+
+# Copy source code
+COPY src/ ./src/
+COPY config/ ./config/
+
+# Build the application
+RUN npm run build
+
+# Expose development ports
+EXPOSE 8080 8081
+
+# Health check for development
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Development command
+USER pulsex
+CMD ["dumb-init", "npm", "run", "dev"]
+
+# Stage 3: Dependencies installation
+FROM base AS dependencies
+ENV NODE_ENV=production
+
+# Copy package files
+COPY package*.json ./
+
+# Install only production dependencies
+RUN npm ci --only=production --no-optional && \
+    npm cache clean --force && \
+    npm dedupe
+
+# Stage 4: WebSocket optimization
+FROM development AS websocket-optimization
+
+# Install WebSocket optimization dependencies
+RUN npm install -g \
+    socket.io \
+    ws \
+    uws \
+    && npm cache clean --force
+
+# Run WebSocket benchmarks
+RUN npm run benchmark:websocket
+
+# Optimize WebSocket configuration
+RUN npm run optimize:websocket
+
+# Stage 5: Production build
+FROM base AS production
+ENV NODE_ENV=production
+
+# Copy production dependencies
+COPY --from=dependencies --chown=pulsex:nodejs /app/node_modules ./node_modules
+
+# Copy built application
+COPY --from=development --chown=pulsex:nodejs /app/dist ./dist
+
+# Copy configuration files
+COPY --chown=pulsex:nodejs package*.json ./
+COPY --chown=pulsex:nodejs tsconfig.json ./
+COPY --chown=pulsex:nodejs config/ ./config/
+
+# Create logs and data directories
+RUN mkdir -p /app/logs && \
+    mkdir -p /app/data/sessions && \
+    chown -R pulsex:nodejs /app/logs /app/data
+
+# Set environment variables for production
+ENV NODE_ENV=production
+ENV WEBSOCKET_PORT=8080
+ENV HTTP_PORT=8081
+ENV PM2_HOME=/app/.pm2
+ENV WS_COMPRESSION=true
+ENV WS_MAX_CONNECTIONS=10000
+env WS_HEARTBEAT_INTERVAL=30000
+
+# Install PM2 for process management
+RUN npm install -g pm2
+
+# PM2 ecosystem file
+COPY --chown=pulsex:nodejs ecosystem.config.js .
+
+# Install WebSocket-specific monitoring tools
+RUN npm install -g clinic doctor
+
+# Expose ports
+EXPOSE 8080 8081
+
+# Health check for production
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8081/api/websocket/health || exit 1
+
+# Switch to non-root user
+USER pulsex
+
+# Production command
+CMD ["dumb-init", "pm2-runtime", "start", "ecosystem.config.js"]
+
+# Stage 6: Load testing
+FROM development AS load-testing
+ENV NODE_ENV=test
+
+# Install load testing dependencies
+RUN npm install -g artillery artillery-plugin-websocket
+
+# Copy load testing scripts
+COPY load-testing/ ./load-testing/
+
+# Run WebSocket load tests
+RUN artillery run load-testing/websocket-load-test.yml
+
+# Stage 7: Scaling optimization
+FROM production AS scaling
+
+# Configure for high concurrency
+ENV UV_THREADPOOL_SIZE=128
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+ENV WS_MAX_CONNECTIONS=50000
+env WS_WORKER_PROCESSES=4
+
+# Install scaling optimization packages
+RUN npm install cluster express-rate-limit
+
+# Copy scaling configuration
+COPY --chown=pulsex:nodejs config/scaling.json ./config/
+
+# Stage 8: Real-time optimization
+FROM scaling AS realtime
+
+# Configure for real-time communication
+ENV REAL_TIME_LATENCY_TARGET=50
+ENV WS_BINARY_FRAME=true
+ENV WS_PERMESSAGE_DEFLATE=true
+
+# Install real-time optimization packages
+RUN npm install \
+    socket.io-redis \
+    @socket.io/sticky \
+    @socket.io/redis-adapter
+
+# Copy real-time configuration
+COPY --chown=pulsex:nodejs config/realtime.json ./config/
+
+# Initialize real-time optimization
+RUN node scripts/init-realtime.js
+
+# Stage 9: Multi-server clustering
+FROM realtime AS clustering
+
+# Configure for multi-server deployment
+ENV REDIS_ADAPTER_HOST=redis-cluster
+ENV REDIS_ADAPTER_PORT=6379
+ENV STICKY_SESSIONS=true
+ENV CLUSTER_MODE=true
+
+# Install clustering dependencies
+RUN npm install -g redis ioredis
+
+# Copy clustering configuration
+COPY --chown=pulsex:nodejs config/clustering.json ./config/
+
+# Stage 10: Security hardening
+FROM clustering AS hardened
+
+# Install security tools
+RUN apk add --no-cache \
+    openssl \
+    && rm -rf /var/cache/apk/*
+
+# Generate SSL certificates for secure WebSocket connections
+RUN openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
+    -keyout /app/ssl/websocket.key \
+    -out /app/ssl/websocket.crt \
+    -subj "/C=US/ST=CA/L=San Francisco/O=PulseX/OU=WebSocket/CN=ws.pulsex.com" \
+    2>/dev/null || true
+
+# Create SSL directory
+RUN mkdir -p /app/ssl && chown pulsex:nodejs /app/ssl
+
+# Set secure file permissions
+RUN chmod 600 /app/ssl/websocket.key && \
+    chmod 644 /app/ssl/websocket.crt
+
+# Install security packages
+RUN npm install helmet cors rate-limiter-flexible
+
+# Configure security settings
+ENV WS_RATE_LIMIT=100
+ENV WS_AUTH_REQUIRED=true
+ENV WS_MESSAGE_VALIDATION=true
+ENV WS_ENCRYPTION_ENABLED=true
+
+# Copy security configuration
+COPY --chown=pulsex:nodejs config/security.json ./config/
+
+# Stage 11: Advanced monitoring
+FROM hardened AS monitoring
+
+# Install monitoring dependencies
+RUN npm install -g \
+    prometheus-client \
+    newrelic \
+    datadog
+
+# Configure advanced monitoring
+ENV PROMETHEUS_METRICS=true
+ENV NEW_RELIC_ENABLED=true
+ENV DATADOG_ENABLED=true
+ENV WS_CONNECTION_TRACKING=true
+env PERFORMANCE_PROFILING=true
+
+# Copy monitoring configuration
+COPY --chown=pulsex:nodejs config/monitoring.json ./config/
+
+# Install monitoring scripts
+COPY --chown=pulsex:nodejs scripts/monitoring/ ./scripts/monitoring/
+
+# Initialize monitoring
+RUN node scripts/monitoring/init-monitoring.js
+
+# Final stage: Production ready WebSocket service
+FROM monitoring
+
+# Add metadata
+ARG BUILD_DATE
+ARG VERSION
+ARG VCS_REF
+
+LABEL org.label-schema.build-date=$BUILD_DATE \
+      org.label-schema.name="PulseX WebSocket Service" \
+      org.label-schema.description="Real-time WebSocket communication hub with clustering" \
+      org.label-schema.url="https://pulsex.com" \
+      org.label-schema.vcs-ref=$VCS_REF \
+      org.label-schema.vcs-url="https://github.com/company/pulsex" \
+      org.label-schema.vendor="PulseX" \
+      org.label-schema.version=$VERSION \
+      org.label-schema.schema-version="1.0"
+
+# Set production environment variables for WebSocket
+ENV WEBSOCKET_MODE=production
+ENV HIGH_CONCURRENCY=true
+env CLUSTERING_ENABLED=true
+ENV REAL_TIME_OPTIMIZATION=true
+ENV SECURITY_ENABLED=true
+ENV MONITORING_ENABLED=true
+ENV ADVANCED_FEATURES=true
+
+# Default command with full optimization
+CMD ["dumb-init", "pm2-runtime", "start", "ecosystem.config.js"]

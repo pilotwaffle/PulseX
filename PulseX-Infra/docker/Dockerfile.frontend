@@ -1,0 +1,246 @@
+# Multi-stage Dockerfile for PulseX Frontend (React/Next.js)
+# Optimized for production with security and performance
+
+# Stage 1: Base image with system dependencies
+FROM node:18-alpine AS base
+LABEL maintainer="PulseX DevOps <devops@pulsex.com>"
+LABEL version="1.0.0"
+LABEL description="PulseX Frontend Application"
+
+# Install system dependencies
+RUN apk add --no-cache \
+    curl \
+    dumb-init \
+    tini \
+    ca-certificates \
+    tzdata \
+    libc6-compat \
+    && rm -rf /var/cache/apk/*
+
+# Set timezone
+ENV TZ=UTC
+
+# Set work directory
+WORKDIR /app
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S pulsex -u 1001
+
+# Stage 2: Development/Builder stage
+FROM base AS development
+ENV NODE_ENV=development
+
+# Copy package files
+COPY package*.json ./
+COPY next.config.js ./
+COPY tsconfig.json ./
+COPY tailwind.config.js ./
+
+# Install all dependencies (including devDependencies)
+RUN npm ci --include=dev && npm cache clean --force
+
+# Copy source code
+COPY src/ ./src/
+COPY public/ ./public/
+
+# Build the application for development
+RUN npm run build
+
+# Expose development port
+EXPOSE 3000
+
+# Health check for development
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:3000 || exit 1
+
+# Development command
+USER pulsex
+CMD ["dumb-init", "npm", "run", "dev"]
+
+# Stage 3: Dependencies installation
+FROM base AS dependencies
+ENV NODE_ENV=production
+
+# Copy package files
+COPY package*.json ./
+
+# Install only production dependencies
+RUN npm ci --only=production --no-optional && \
+    npm cache clean --force && \
+    npm dedupe
+
+# Stage 4: Builder stage for production
+FROM base AS builder
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Copy package files
+COPY package*.json ./
+COPY next.config.js ./
+COPY tsconfig.json ./
+COPY tailwind.config.js ./
+
+# Install dependencies
+RUN npm ci --include=dev && npm cache clean --force
+
+# Copy source code
+COPY src/ ./src/
+COPY public/ ./public/
+
+# Build the application
+RUN npm run build
+
+# Stage 5: Production server
+FROM node:18-alpine AS production
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Install system dependencies for production
+RUN apk add --no-cache \
+    curl \
+    dumb-init \
+    tini \
+    ca-certificates \
+    tzdata \
+    && rm -rf /var/cache/apk/*
+
+# Set timezone
+ENV TZ=UTC
+
+# Set work directory
+WORKDIR /app
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S pulsex -u 1001
+
+# Copy built application from builder stage
+COPY --from=builder --chown=pulsex:nodejs /app/public ./public
+COPY --from=builder --chown=pulsex:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=pulsex:nodejs /app/.next/static ./.next/static
+
+# Copy package.json for production dependencies
+COPY --from=builder --chown=pulsex:nodejs /app/package.json ./package.json
+
+# Install only production dependencies
+RUN npm ci --only=production --no-optional && \
+    npm cache clean --force
+
+# Create logs directory
+RUN mkdir -p /app/logs && chown pulsex:nodejs /app/logs
+
+# Set environment variables
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+
+# Expose port
+EXPOSE 3000
+
+# Health check for production
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:3000/api/health || exit 1
+
+# Switch to non-root user
+USER pulsex
+
+# Production command
+CMD ["dumb-init", "node", "server.js"]
+
+# Stage 6: Static files serving with Nginx
+FROM nginx:alpine AS static
+
+# Install curl for health checks
+RUN apk add --no-cache curl
+
+# Copy custom nginx configuration
+COPY --from=builder /app/nginx.conf /etc/nginx/nginx.conf
+
+# Copy built static files
+COPY --from=builder /app/out /usr/share/nginx/html
+
+# Copy health check script
+COPY --from=builder /app/health-check.sh /health-check.sh
+RUN chmod +x /health-check.sh
+
+# Expose port
+EXPOSE 80
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD /health-check.sh || exit 1
+
+# Default command
+CMD ["nginx", "-g", "daemon off;"]
+
+# Stage 7: Testing
+FROM development AS testing
+ENV NODE_ENV=test
+
+# Run unit tests
+RUN npm run test:unit
+
+# Run component tests
+RUN npm run test:component
+
+# Run e2e tests
+RUN npm run test:e2e
+
+# Run accessibility tests
+RUN npm run test:accessibility
+
+# Run performance tests
+RUN npm run test:performance
+
+# Run code coverage
+RUN npm run test:coverage
+
+# Stage 8: Security scanning
+FROM development AS security
+ENV NODE_ENV=production
+
+# Run security audit
+RUN npm audit --audit-level moderate --production
+
+# Run static security analysis
+RUN npm run lint:security
+
+# Stage 9: A/B Testing build
+FROM builder AS ab-testing
+ENV NODE_ENV=production
+
+# Build with A/B testing features enabled
+RUN npm run build:ab-testing
+
+# Stage 10: Edge optimization
+FROM production AS edge-optimized
+
+# Install edge-specific dependencies
+RUN apk add --no-cache \
+    brotli \
+    && rm -rf /var/cache/apk/*
+
+# Add brotli compression configuration
+COPY --from=builder /app/nginx-brotli.conf /etc/nginx/conf.d/brotli.conf
+
+# Final stage: Multi-arch production build
+FROM production
+
+# Add metadata
+ARG BUILD_DATE
+ARG VERSION
+ARG VCS_REF
+
+LABEL org.label-schema.build-date=$BUILD_DATE \
+      org.label-schema.name="PulseX Frontend" \
+      org.label-schema.description="Production-ready PulseX frontend application" \
+      org.label-schema.url="https://pulsex.com" \
+      org.label-schema.vcs-ref=$VCS_REF \
+      org.label-schema.vcs-url="https://github.com/company/pulsex" \
+      org.label-schema.vendor="PulseX" \
+      org.label-schema.version=$VERSION \
+      org.label-schema.schema-version="1.0"
+
+# Default command (can be overridden)
+CMD ["dumb-init", "node", "server.js"]

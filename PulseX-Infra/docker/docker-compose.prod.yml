@@ -1,0 +1,691 @@
+# PulseX Production Environment
+# Enterprise-grade production Docker Compose configuration
+
+version: '3.8'
+
+networks:
+  pulsex-network:
+    driver: overlay
+    attachable: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.0.0.0/16
+
+volumes:
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER:-localhost},rw
+      device: ":/opt/pulsex/postgres"
+  redis_data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER:-localhost},rw
+      device: ":/opt/pulsex/redis"
+  postgres_backups:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER:-localhost},rw
+      device: ":/opt/pulsex/backups/postgres"
+  redis_backups:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER:-localhost},rw
+      device: ":/opt/pulsex/backups/redis"
+  logs:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER:-localhost},rw
+      device: ":/opt/pulsex/logs"
+  ssl_certs:
+    driver: local
+
+secrets:
+  postgres_password:
+    external: true
+  redis_password:
+    external: true
+  jwt_secret:
+    external: true
+  aws_credentials:
+    external: true
+  ssl_certificate:
+    external: true
+  ssl_private_key:
+    external: true
+
+services:
+  # PostgreSQL Database (Primary)
+  postgres:
+    image: postgres:15-alpine
+    container_name: pulsex-postgres-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pulsex_prod}
+      POSTGRES_USER: ${POSTGRES_USER:-pulsex_admin}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+      PGDATA: /var/lib/postgresql/data/pgdata
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - postgres_backups:/backups
+      - ../scripts/postgres/init-prod.sql:/docker-entrypoint-initdb.d/init-prod.sql:ro
+      - ../config/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ../config/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    networks:
+      pulsex-network:
+        ipv4_address: 10.0.0.10
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 16G
+        reservations:
+          cpus: '2.0'
+          memory: 8G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 60s
+        max_failure_ratio: 0.3
+      placement:
+        constraints:
+          - node.labels.db == primary
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pulsex_admin} -d ${POSTGRES_DB:-pulsex_prod}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+        labels: "service=postgres,environment=production"
+    labels:
+      - "traefik.enable=false"
+      - "com.pulsex.service=postgres"
+      - "com.pulsex.environment=production"
+      - "com.pulsex.tier=database"
+
+  # PostgreSQL Read Replica
+  postgres-replica:
+    image: postgres:15-alpine
+    container_name: pulsex-postgres-replica-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pulsex_prod}
+      POSTGRES_USER: ${POSTGRES_USER:-pulsex_admin}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      PGUSER: ${POSTGRES_USER:-pulsex_admin}
+      POSTGRES_MASTER_HOST: postgres
+      POSTGRES_MASTER_PORT: 5432
+      PGDATA: /var/lib/postgresql/data/pgdata
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../config/postgres/replica-setup.sh:/docker-entrypoint-initdb.d/replica-setup.sh:ro
+    networks:
+      pulsex-network:
+        ipv4_address: 10.0.0.11
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 8G
+        reservations:
+          cpus: '1.0'
+          memory: 4G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      placement:
+        constraints:
+          - node.labels.db == replica
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pulsex_admin} -d ${POSTGRES_DB:-pulsex_prod}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+        labels: "service=postgres-replica,environment=production"
+    labels:
+      - "com.pulsex.service=postgres-replica"
+      - "com.pulsex.environment=production"
+      - "com.pulsex.tier=database"
+
+  # Redis Cluster
+  redis:
+    image: redis:7-alpine
+    container_name: pulsex-redis-prod
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 8gb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --rdbcompression yes
+      --rdbchecksum yes
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+      --cluster-announce-ip ${REDIS_ANNOUNCE_IP}
+      --cluster-announce-port 6379
+      --cluster-announce-bus-port 16379
+      --protected-mode yes
+      --requirepass-file /run/secrets/redis_password
+    secrets:
+      - redis_password
+    volumes:
+      - redis_data:/data
+      - redis_backups:/backups
+      - ../config/redis/redis-cluster.conf:/etc/redis/redis.conf:ro
+    networks:
+      pulsex-network:
+        ipv4_address: 10.0.0.20
+    deploy:
+      replicas: 6
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      placement:
+        max_replicas_per_node: 2
+        constraints:
+          - node.labels.cache == redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "10"
+        labels: "service=redis,environment=production"
+    labels:
+      - "com.pulsex.service=redis"
+      - "com.pulsex.environment=production"
+      - "com.pulsex.tier=cache"
+
+  # PulseX API Service
+  api:
+    build:
+      context: ..
+      dockerfile: infrastructure/docker/Dockerfile.api
+      target: production
+      args:
+        BUILD_DATE: ${BUILD_DATE}
+        VERSION: ${VERSION}
+        VCS_REF: ${VCS_REF}
+    image: pulsex/api:${VERSION:-latest}
+    container_name: pulsex-api-prod
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pulsex_admin}:file:/run/secrets/postgres_password@postgres-replica:5432/${POSTGRES_DB:-pulsex_prod}
+      DATABASE_PRIMARY_URL: postgresql://${POSTGRES_USER:-pulsex_admin}:file:/run/secrets/postgres_password@postgres:5432/${POSTGRES_DB:-pulsex_prod}
+      REDIS_URL: redis://:file:/run/secrets/redis_password@redis:6379
+      REDIS_CLUSTER_NODES: "redis:6379,redis:6380,redis:6381"
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+      AWS_ACCESS_KEY_ID_FILE: /run/secrets/aws_credentials
+      AWS_SECRET_ACCESS_KEY_FILE: /run/secrets/aws_credentials
+      AWS_REGION: ${AWS_REGION}
+      S3_BUCKET: ${S3_BUCKET}
+      CDN_DOMAIN: ${CDN_DOMAIN}
+      API_RATE_LIMIT: ${API_RATE_LIMIT:-10000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      WEBSOCKET_URL: wss://websocket.pulsex.com
+      MARKET_DATA_URL: https://market-data.pulsex.com
+      TRADING_ENGINE_URL: https://trading-engine.pulsex.com
+    secrets:
+      - postgres_password
+      - redis_password
+      - jwt_secret
+      - aws_credentials
+    volumes:
+      - logs:/app/logs
+      - ssl_certs:/app/ssl
+    networks:
+      pulsex-network:
+        ipv4_address: 10.0.0.30
+    deploy:
+      replicas: 6
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      update_config:
+        parallelism: 2
+        delay: 10s
+        failure_action: rollback
+        monitor: 60s
+        max_failure_ratio: 0.2
+      placement:
+        constraints:
+          - node.labels.app == api
+    depends_on:
+      - postgres
+      - postgres-replica
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "10"
+        labels: "service=api,environment=production"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.pulsex-api.rule=Host(`api.pulsex.com`)"
+      - "traefik.http.services.pulsex-api.loadbalancer.server.port=3000"
+      - "com.pulsex.service=api"
+      - "com.pulsex.environment=production"
+      - "com.pulsex.tier=application"
+
+  # PulseX Frontend Application
+  frontend:
+    build:
+      context: ..
+      dockerfile: infrastructure/docker/Dockerfile.frontend
+      target: production
+      args:
+        BUILD_DATE: ${BUILD_DATE}
+        VERSION: ${VERSION}
+        VCS_REF: ${VCS_REF}
+    image: pulsex/frontend:${VERSION:-latest}
+    container_name: pulsex-frontend-prod
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      NEXT_PUBLIC_API_URL: https://api.pulsex.com
+      NEXT_PUBLIC_WS_URL: wss://websocket.pulsex.com
+      NEXT_PUBLIC_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CDN_DOMAIN: ${CDN_DOMAIN}
+    volumes:
+      - logs:/app/logs
+    networks:
+      pulsex-network:
+        ipv4_address: 10.0.0.31
+    deploy:
+      replicas: 4
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      update_config:
+        parallelism: 2
+        delay: 10s
+        failure_action: rollback
+        monitor: 60s
+        max_failure_ratio: 0.2
+      placement:
+        constraints:
+          - node.labels.app == frontend
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "10"
+        labels: "service=frontend,environment=production"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.pulsex-frontend.rule=Host(`pulsex.com`, `www.pulsex.com`)"
+      - "traefik.http.services.pulsex-frontend.loadbalancer.server.port=3001"
+      - "com.pulsex.service=frontend"
+      - "com.pulsex.environment=production"
+      - "com.pulsex.tier=application"
+
+  # Trading Engine Service
+  trading-engine:
+    build:
+      context: ..
+      dockerfile: infrastructure/docker/Dockerfile.trading-engine
+      target: production
+      args:
+        BUILD_DATE: ${BUILD_DATE}
+        VERSION: ${VERSION}
+        VCS_REF: ${VCS_REF}
+    image: pulsex/trading-engine:${VERSION:-latest}
+    container_name: pulsex-trading-engine-prod
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pulsex_admin}:file:/run/secrets/postgres_password@postgres:5432/${POSTGRES_DB:-pulsex_prod}
+      REDIS_URL: redis://:file:/run/secrets/redis_password@redis:6379
+      MARKET_DATA_URL: https://market-data.pulsex.com
+      TRADING_MODE: production
+      RISK_MANAGEMENT_ENABLED: ${RISK_MANAGEMENT_ENABLED:-true}
+      HIGH_FREQUENCY_TRADING: ${HIGH_FREQUENCY_TRADING:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TRADING_API_KEY: ${TRADING_API_KEY}
+      TRADING_API_SECRET: ${TRADING_API_SECRET}
+    secrets:
+      - postgres_password
+      - redis_password
+    volumes:
+      - logs:/app/logs
+      - ssl_certs:/app/ssl
+    networks:
+      pulsex-network:
+        ipv4_address: 10.0.0.32
+    deploy:
+      replicas: 4
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+        reservations:
+          cpus: '2.0'
+          memory: 4G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      update_config:
+        parallelism: 2
+        delay: 10s
+        failure_action: rollback
+        monitor: 60s
+        max_failure_ratio: 0.1
+      placement:
+        constraints:
+          - node.labels.app == trading
+    depends_on:
+      - postgres
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/api/trading/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "10"
+        labels: "service=trading-engine,environment=production"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.pulsex-trading.rule=Host(`trading.pulsex.com`)"
+      - "traefik.http.services.pulsex-trading.loadbalancer.server.port=4000"
+      - "com.pulsex.service=trading-engine"
+      - "com.pulsex.environment=production"
+      - "com.pulsex.tier=application"
+
+  # Market Data Service
+  market-data:
+    build:
+      context: ..
+      dockerfile: infrastructure/docker/Dockerfile.market-data
+      target: production
+      args:
+        BUILD_DATE: ${BUILD_DATE}
+        VERSION: ${VERSION}
+        VCS_REF: ${VCS_REF}
+    image: pulsex/market-data:${VERSION:-latest}
+    container_name: pulsex-market-data-prod
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pulsex_admin}:file:/run/secrets/postgres_password@postgres-replica:5432/${POSTGRES_DB:-pulsex_prod}
+      REDIS_URL: redis://:file:/run/secrets/redis_password@redis:6379
+      DATA_PROCESSING_MODE: production
+      REAL_TIME_UPDATES: ${REAL_TIME_UPDATES:-true}
+      CACHE_TTL: ${CACHE_TTL:-60}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MARKET_DATA_API_KEY: ${MARKET_DATA_API_KEY}
+    secrets:
+      - postgres_password
+      - redis_password
+    volumes:
+      - logs:/app/logs
+    networks:
+      pulsex-network:
+        ipv4_address: 10.0.0.33
+    deploy:
+      replicas: 4
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+        reservations:
+          cpus: '2.0'
+          memory: 4G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      update_config:
+        parallelism: 2
+        delay: 10s
+        failure_action: rollback
+        monitor: 60s
+        max_failure_ratio: 0.2
+      placement:
+        constraints:
+          - node.labels.app == market-data
+    depends_on:
+      - postgres
+      - postgres-replica
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/market-data/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "10"
+        labels: "service=market-data,environment=production"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.pulsex-market-data.rule=Host(`market-data.pulsex.com`)"
+      - "traefik.http.services.pulsex-market-data.loadbalancer.server.port=5000"
+      - "com.pulsex.service=market-data"
+      - "com.pulsex.environment=production"
+      - "com.pulsex.tier=application"
+
+  # WebSocket Service
+  websocket:
+    build:
+      context: ..
+      dockerfile: infrastructure/docker/Dockerfile.websocket
+      target: production
+      args:
+        BUILD_DATE: ${BUILD_DATE}
+        VERSION: ${VERSION}
+        VCS_REF: ${VCS_REF}
+    image: pulsex/websocket:${VERSION:-latest}
+    container_name: pulsex-websocket-prod
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      WEBSOCKET_PORT: 8080
+      HTTP_PORT: 8081
+      REDIS_URL: redis://:file:/run/secrets/redis_password@redis:6379
+      WS_MAX_CONNECTIONS: ${WS_MAX_CONNECTIONS:-50000}
+      WS_COMPRESSION: ${WS_COMPRESSION:-true}
+      WS_HEARTBEAT_INTERVAL: ${WS_HEARTBEAT_INTERVAL:-30000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      API_URL: https://api.pulsex.com
+    secrets:
+      - redis_password
+    volumes:
+      - logs:/app/logs
+      - ssl_certs:/app/ssl
+    networks:
+      pulsex-network:
+        ipv4_address: 10.0.0.34
+    deploy:
+      replicas: 6
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      update_config:
+        parallelism: 2
+        delay: 10s
+        failure_action: rollback
+        monitor: 60s
+        max_failure_ratio: 0.2
+      placement:
+        constraints:
+          - node.labels.app == websocket
+    depends_on:
+      - api
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/api/websocket/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "10"
+        labels: "service=websocket,environment=production"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.pulsex-websocket-http.rule=Host(`ws.pulsex.com`)"
+      - "traefik.http.services.pulsex-websocket-http.loadbalancer.server.port=8081"
+      - "com.pulsex.service=websocket"
+      - "com.pulsex.environment=production"
+      - "com.pulsex.tier=application"
+
+  # Nginx Reverse Proxy with SSL
+  nginx:
+    image: nginx:alpine
+    container_name: pulsex-nginx-prod
+    restart: unless-stopped
+    secrets:
+      - ssl_certificate
+      - ssl_private_key
+    volumes:
+      - ../config/nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ../config/nginx/conf.d:/etc/nginx/conf.d:ro
+      - logs:/var/log/nginx
+      - ssl_certs:/etc/nginx/ssl:ro
+    networks:
+      pulsex-network:
+        ipv4_address: 10.0.0.5
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      placement:
+        constraints:
+          - node.labels.edge == true
+    depends_on:
+      - frontend
+      - api
+      - websocket
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "10"
+        labels: "service=nginx,environment=production"
+    labels:
+      - "com.pulsex.service=nginx"
+      - "com.pulsex.environment=production"
+      - "com.pulsex.tier=proxy"

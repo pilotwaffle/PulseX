@@ -1,0 +1,274 @@
+# Multi-stage Dockerfile for PulseX Market Data Service
+# Optimized for high-throughput data processing and low-latency delivery
+
+# Stage 1: Base image with system dependencies
+FROM node:18-alpine AS base
+LABEL maintainer="PulseX DevOps <devops@pulsex.com>"
+LABEL version="1.0.0"
+LABEL description="PulseX Market Data Service - High-throughput data processing"
+
+# Install system dependencies
+RUN apk add --no-cache \
+    curl \
+    dumb-init \
+    tini \
+    ca-certificates \
+    tzdata \
+    gcc \
+    g++ \
+    make \
+    python3 \
+    curl-dev \
+    && rm -rf /var/cache/apk/*
+
+# Set timezone
+ENV TZ=UTC
+
+# Set work directory
+WORKDIR /app
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S pulsex -u 1001
+
+# Stage 2: Development/Builder stage
+FROM base AS development
+ENV NODE_ENV=development
+
+# Copy package files
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# Install all dependencies (including devDependencies)
+RUN npm ci --include=dev && npm cache clean --force
+
+# Copy source code
+COPY src/ ./src/
+COPY config/ ./config/
+
+# Build the application
+RUN npm run build
+
+# Expose development port
+EXPOSE 5000
+
+# Health check for development
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
+# Development command
+USER pulsex
+CMD ["dumb-init", "npm", "run", "dev"]
+
+# Stage 3: Dependencies installation
+FROM base AS dependencies
+ENV NODE_ENV=production
+
+# Copy package files
+COPY package*.json ./
+
+# Install only production dependencies
+RUN npm ci --only=production --no-optional && \
+    npm cache clean --force && \
+    npm dedupe
+
+# Stage 4: Data processing optimization
+FROM development AS data-optimization
+
+# Install data processing dependencies
+RUN npm install -g \
+    apache-arrow \
+    duckdb \
+    && npm cache clean --force
+
+# Run data processing benchmarks
+RUN npm run benchmark:data-processing
+
+# Optimize data schemas
+RUN npm run optimize:schemas
+
+# Stage 5: Production build
+FROM base AS production
+ENV NODE_ENV=production
+
+# Copy production dependencies
+COPY --from=dependencies --chown=pulsex:nodejs /app/node_modules ./node_modules
+
+# Copy built application
+COPY --from=development --chown=pulsex:nodejs /app/dist ./dist
+
+# Copy configuration files
+COPY --chown=pulsex:nodejs package*.json ./
+COPY --chown=pulsex:nodejs tsconfig.json ./
+COPY --chown=pulsex:nodejs config/ ./config/
+
+# Create directories for data processing
+RUN mkdir -p /app/data/cache && \
+    mkdir -p /app/data/processed && \
+    mkdir -p /app/data/raw && \
+    mkdir -p /app/logs && \
+    chown -R pulsex:nodejs /app/data /app/logs
+
+# Set environment variables for production
+ENV NODE_ENV=production
+ENV PORT=5000
+ENV PM2_HOME=/app/.pm2
+ENV DATA_CACHE_TTL=300
+ENV DATA_BATCH_SIZE=1000
+ENV DATA_PROCESSING_CONCURRENCY=4
+
+# Install PM2 for process management
+RUN npm install -g pm2
+
+# PM2 ecosystem file
+COPY --chown=pulsex:nodejs ecosystem.config.js .
+
+# Install data processing tools
+RUN npm install -g \
+    kafkajs \
+    redis \
+    ioredis
+
+# Expose port
+EXPOSE 5000
+
+# Health check for production
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:5000/api/market-data/health || exit 1
+
+# Switch to non-root user
+USER pulsex
+
+# Production command
+CMD ["dumb-init", "pm2-runtime", "start", "ecosystem.config.js"]
+
+# Stage 6: Real-time data processing
+FROM production AS realtime
+
+# Install real-time data processing dependencies
+RUN npm install -g \
+    kafka-node \
+    socket.io \
+    ws
+
+# Configure for real-time processing
+ENV REALTIME_DATA_PROCESSING=true
+env WEBSOCKET_COMPRESSION=true
+ENV KAFKA_BATCH_SIZE=100
+ENV REDIS_CLUSTER=true
+
+# Copy real-time configuration
+COPY --chown=pulsex:nodejs config/realtime.json ./config/
+
+# Stage 7: Big data optimization
+FROM realtime AS big-data
+
+# Install big data dependencies
+RUN apk add --no-cache \
+    openjdk11 \
+    && rm -rf /var/cache/apk/*
+
+# Install Apache Spark clients
+RUN npm install -g spark-js
+
+# Configure for big data processing
+ENV BIG_DATA_PROCESSING=true
+ENV SPARK_MASTER_URL=spark://spark-master:7077
+ENV HADOOP_CONF_DIR=/app/hadoop-config
+
+# Create Hadoop config directory
+RUN mkdir -p /app/hadoop-config && chown pulsex:nodejs /app/hadoop-config
+
+# Stage 8: Caching optimization
+FROM big-data AS caching
+
+# Configure advanced caching
+ENV REDIS_CLUSTER_NODES=redis-1:6379,redis-2:6379,redis-3:6379
+ENV REDIS_CACHE_STRATEGY=LRU
+ENV MEMORY_CACHE_SIZE=1GB
+ENV DISK_CACHE_SIZE=10GB
+
+# Copy caching configuration
+COPY --chown=pulsex:nodejs config/cache.json ./config/
+
+# Initialize cache system
+RUN node scripts/init-cache.js
+
+# Stage 9: Monitoring and analytics
+FROM caching AS monitoring
+
+# Install monitoring dependencies
+RUN npm install -g \
+    prometheus-client \
+    grafana-api
+
+# Configure monitoring
+ENV METRICS_ENABLED=true
+ENV ANALYTICS_ENABLED=true
+ENV PERFORMANCE_PROFILING=true
+
+# Copy monitoring configuration
+COPY --chown=pulsex:nodejs config/monitoring.json ./config/
+
+# Stage 10: Security hardening
+FROM monitoring AS hardened
+
+# Install security tools
+RUN apk add --no-cache \
+    openssl \
+    && rm -rf /var/cache/apk/*
+
+# Generate SSL certificates for secure data transfer
+RUN openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
+    -keyout /app/ssl/market-data.key \
+    -out /app/ssl/market-data.crt \
+    -subj "/C=US/ST=CA/L=San Francisco/O=PulseX/OU=Market-Data/CN=market-data.pulsex.com" \
+    2>/dev/null || true
+
+# Create SSL directory
+RUN mkdir -p /app/ssl && chown pulsex:nodejs /app/ssl
+
+# Set secure file permissions
+RUN chmod 600 /app/ssl/market-data.key && \
+    chmod 644 /app/ssl/market-data.crt
+
+# Install security packages
+RUN npm install helmet express-rate-limit helmet-cors
+
+# Configure security settings
+ENV API_RATE_LIMIT=1000
+env ENCRYPTION_ENABLED=true
+ENV DATA_ACCESS_LOGGING=true
+
+# Copy security configuration
+COPY --chown=pulsex:nodejs config/security.json ./config/
+
+# Final stage: Production ready market data service
+FROM hardened
+
+# Add metadata
+ARG BUILD_DATE
+ARG VERSION
+ARG VCS_REF
+
+LABEL org.label-schema.build-date=$BUILD_DATE \
+      org.label-schema.name="PulseX Market Data Service" \
+      org.label-schema.description="High-throughput market data processing and delivery service" \
+      org.label-schema.url="https://pulsex.com" \
+      org.label-schema.vcs-ref=$VCS_REF \
+      org.label-schema.vcs-url="https://github.com/company/pulsex" \
+      org.label-schema.vendor="PulseX" \
+      org.label-schema.version=$VERSION \
+      org.label-schema.schema-version="1.0"
+
+# Set production environment variables for market data
+ENV DATA_PROCESSING_MODE=production
+ENV REAL_TIME_UPDATES=true
+ENV BIG_DATA_ANALYTICS=true
+ENV ADVANCED_CACHING=true
+ENV MONITORING_ENABLED=true
+ENV SECURITY_ENABLED=true
+ENV HIGH_THROUGHPUT_MODE=true
+
+# Default command with full optimization
+CMD ["dumb-init", "pm2-runtime", "start", "ecosystem.config.js"]

@@ -1,0 +1,177 @@
+# Multi-stage Dockerfile for PulseX API Service
+# Optimized for production deployment with security and performance
+
+# Stage 1: Base image with system dependencies
+FROM node:18-alpine AS base
+LABEL maintainer="PulseX DevOps <devops@pulsex.com>"
+LABEL version="1.0.0"
+LABEL description="PulseX API Service"
+
+# Install system dependencies
+RUN apk add --no-cache \
+    curl \
+    dumb-init \
+    tini \
+    ca-certificates \
+    tzdata \
+    && rm -rf /var/cache/apk/*
+
+# Set timezone
+ENV TZ=UTC
+
+# Set work directory
+WORKDIR /app
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S pulsex -u 1001
+
+# Stage 2: Development/Builder stage
+FROM base AS development
+ENV NODE_ENV=development
+
+# Copy package files
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# Install all dependencies (including devDependencies)
+RUN npm ci --include=dev && npm cache clean --force
+
+# Copy source code
+COPY src/ ./src/
+
+# Build the application
+RUN npm run build
+
+# Expose development port
+EXPOSE 3000
+
+# Health check for development
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:3000/health || exit 1
+
+# Development command
+USER pulsex
+CMD ["dumb-init", "npm", "run", "dev"]
+
+# Stage 3: Dependencies installation
+FROM base AS dependencies
+ENV NODE_ENV=production
+
+# Copy package files
+COPY package*.json ./
+
+# Install only production dependencies
+RUN npm ci --only=production --no-optional && \
+    npm cache clean --force && \
+    npm dedupe
+
+# Stage 4: Security scanning and testing
+FROM development AS security
+ENV NODE_ENV=production
+
+# Run security audit
+RUN npm audit --audit-level moderate --production
+
+# Run static security analysis
+RUN npm run lint:security
+
+# Stage 5: Production build
+FROM base AS production
+ENV NODE_ENV=production
+
+# Copy production dependencies
+COPY --from=dependencies --chown=pulsex:nodejs /app/node_modules ./node_modules
+
+# Copy built application
+COPY --from=development --chown=pulsex:nodejs /app/dist ./dist
+
+# Copy configuration files
+COPY --chown=pulsex:nodejs package*.json ./
+COPY --chown=pulsex:nodejs tsconfig.json ./
+
+# Copy any additional static assets
+COPY --chown=pulsex:nodejs public/ ./public/
+
+# Create logs directory
+RUN mkdir -p /app/logs && chown pulsex:nodejs /app/logs
+
+# Set environment variables for production
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV PM2_HOME=/app/.pm2
+
+# Install PM2 for process management
+RUN npm install -g pm2
+
+# PM2 ecosystem file
+COPY --chown=pulsex:nodejs ecosystem.config.js .
+
+# Expose port
+EXPOSE 3000
+
+# Health check for production
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:3000/api/health || exit 1
+
+# Switch to non-root user
+USER pulsex
+
+# Production command
+CMD ["dumb-init", "pm2-runtime", "start", "ecosystem.config.js"]
+
+# Stage 6: Testing
+FROM development AS testing
+ENV NODE_ENV=test
+
+# Run unit tests
+RUN npm run test:unit
+
+# Run integration tests
+RUN npm run test:integration
+
+# Run code coverage
+RUN npm run test:coverage
+
+# Stage 7: Security hardening
+FROM production AS hardened
+
+# Install security tools
+RUN apk add --no-cache \
+    openssl \
+    && rm -rf /var/cache/apk/*
+
+# Generate SSL certificates for internal communication
+RUN openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /app/ssl/server.key \
+    -out /app/ssl/server.crt \
+    -subj "/C=US/ST=CA/L=San Francisco/O=PulseX/CN=localhost" \
+    2>/dev/null || true
+
+# Create SSL directory
+RUN mkdir -p /app/ssl && chown pulsex:nodejs /app/ssl
+
+# Set secure file permissions
+RUN chmod 600 /app/ssl/server.key && \
+    chmod 644 /app/ssl/server.crt
+
+# Final stage: Production optimized
+FROM hardened
+
+# Add metadata
+ARG BUILD_DATE
+ARG VERSION
+ARG VCS_REF
+
+LABEL org.label-schema.build-date=$BUILD_DATE \
+      org.label-schema.name="PulseX API" \
+      org.label-schema.description="Production-ready PulseX API service" \
+      org.label-schema.url="https://pulsex.com" \
+      org.label-schema.vcs-ref=$VCS_REF \
+      org.label-schema.vcs-url="https://github.com/company/pulsex" \
+      org.label-schema.vendor="PulseX" \
+      org.label-schema.version=$VERSION \
+      org.label-schema.schema-version="1.0"
+
+# Default command (can be overridden)
+CMD ["dumb-init", "pm2-runtime", "start", "ecosystem.config.js"]

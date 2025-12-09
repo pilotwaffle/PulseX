@@ -1,0 +1,372 @@
+{
+  "security_configuration": {
+    "network_security": {
+      "vpc_security": {
+        "cidr_blocks": {
+          "vpc_cidr": "10.0.0.0/16",
+          "public_subnets": ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"],
+          "private_subnets": ["10.0.11.0/24", "10.0.12.0/24", "10.0.13.0/24"],
+          "database_subnets": ["10.0.21.0/24", "10.0.22.0/24", "10.0.23.0/24"]
+        },
+        "flow_logs": {
+          "enabled": true,
+          "traffic_type": "ALL",
+          "destination": "cloudwatch-logs"
+        },
+        "nat_gateways": {
+          "count": 3,
+          "eip_allocation": "elastic"
+        }
+      },
+      "security_groups": {
+        "alb_sg": {
+          "ingress": [
+            {
+              "port": 80,
+              "protocol": "tcp",
+              "cidr_blocks": ["0.0.0.0/0"],
+              "description": "HTTP traffic"
+            },
+            {
+              "port": 443,
+              "protocol": "tcp",
+              "cidr_blocks": ["0.0.0.0/0"],
+              "description": "HTTPS traffic"
+            }
+          ],
+          "egress": [
+            {
+              "protocol": "-1",
+              "cidr_blocks": ["0.0.0.0/0"],
+              "description": "All outbound traffic"
+            }
+          ]
+        },
+        "ecs_sg": {
+          "ingress": [
+            {
+              "port": 3000,
+              "protocol": "tcp",
+              "security_groups": ["${alb_sg_id}"],
+              "description": "Application traffic from ALB"
+            }
+          ],
+          "egress": [
+            {
+              "protocol": "-1",
+              "cidr_blocks": ["0.0.0.0/0"],
+              "description": "All outbound traffic"
+            }
+          ]
+        },
+        "rds_sg": {
+          "ingress": [
+            {
+              "port": 5432,
+              "protocol": "tcp",
+              "security_groups": ["${ecs_sg_id}"],
+              "description": "Database traffic from ECS"
+            },
+            {
+              "port": 5432,
+              "protocol": "tcp",
+              "security_groups": ["${bastion_sg_id}"],
+              "description": "Database access from bastion"
+            }
+          ],
+          "egress": []
+        },
+        "redis_sg": {
+          "ingress": [
+            {
+              "port": 6379,
+              "protocol": "tcp",
+              "security_groups": ["${ecs_sg_id}"],
+              "description": "Redis access from ECS"
+            }
+          ],
+          "egress": []
+        },
+        "bastion_sg": {
+          "ingress": [
+            {
+              "port": 22,
+              "protocol": "tcp",
+              "cidr_blocks": ["${office_ip_range}"],
+              "description": "SSH from office"
+            }
+          ],
+          "egress": [
+            {
+              "protocol": "-1",
+              "cidr_blocks": ["0.0.0.0/0"],
+              "description": "All outbound traffic"
+            }
+          ]
+        }
+      }
+    },
+    "application_security": {
+      "container_security": {
+        "readonly_root_filesystem": true,
+        "run_as_non_root": true,
+        "drop_all_capabilities": true,
+        "add_capabilities": ["NET_BIND_SERVICE"],
+        "security_context": {
+          "user_id": 1001,
+          "group_id": 1001
+        }
+      },
+      "secrets_management": {
+        "secrets_manager": {
+          "rotation_enabled": true,
+          "rotation_period": 30,
+          "secrets": [
+            "database-password",
+            "redis-auth-token",
+            "jwt-secret",
+            "api-keys",
+            "third-party-service-credentials"
+          ]
+        },
+        "parameter_store": {
+          "parameters": [
+            "app-version",
+            "feature-flags",
+            "configuration-values"
+          ]
+        }
+      },
+      "ssl_tls": {
+        "minimum_version": "TLSv1.2",
+        "ciphers": [
+          "TLS_AES_256_GCM_SHA384",
+          "TLS_CHACHA20_POLY1305_SHA256",
+          "TLS_AES_128_GCM_SHA256"
+        ],
+        "certificate_transparency": true,
+        "ocsp_stapling": true
+      }
+    },
+    "waf_configuration": {
+      "web_acl": {
+        "default_action": "allow",
+        "scope": "REGIONAL",
+        "rules": [
+          {
+            "name": "AWSManagedRulesCommonRuleSet",
+            "priority": 1,
+            "override_action": "none",
+            "statement": {
+              "managed_rule_group_statement": {
+                "name": "AWSManagedRulesCommonRuleSet",
+                "vendor_name": "AWS"
+              }
+            },
+            "visibility_config": {
+              "sampled_requests_enabled": true,
+              "cloudwatch_metrics_enabled": true,
+              "metric_name": "CommonRuleSet"
+            }
+          },
+          {
+            "name": "AWSManagedRulesKnownBadInputsRuleSet",
+            "priority": 2,
+            "override_action": "none",
+            "statement": {
+              "managed_rule_group_statement": {
+                "name": "AWSManagedRulesKnownBadInputsRuleSet",
+                "vendor_name": "AWS"
+              }
+            },
+            "visibility_config": {
+              "sampled_requests_enabled": true,
+              "cloudwatch_metrics_enabled": true,
+              "metric_name": "KnownBadInputs"
+            }
+          },
+          {
+            "name": "RateLimitRule",
+            "priority": 10,
+            "statement": {
+              "rate_based_statement": {
+                "limit": 2000,
+                "aggregate_key_type": "IP"
+              }
+            },
+            "action": {
+              "block": {}
+            },
+            "visibility_config": {
+              "sampled_requests_enabled": true,
+              "cloudwatch_metrics_enabled": true,
+              "metric_name": "RateLimitRule"
+            }
+          },
+          {
+            "name": "SQLInjectionRule",
+            "priority": 20,
+            "statement": {
+              "sqli_match_statement": {
+                "field_to_match": {
+                  "body": {}
+                },
+                "text_transformation": [
+                  {
+                    "priority": 0,
+                    "type": "URL_DECODE"
+                  }
+                ]
+              }
+            },
+            "action": {
+              "block": {}
+            },
+            "visibility_config": {
+              "sampled_requests_enabled": true,
+              "cloudwatch_metrics_enabled": true,
+              "metric_name": "SQLInjection"
+            }
+          },
+          {
+            "name": "XSSRule",
+            "priority": 30,
+            "statement": {
+              "xss_match_statement": {
+                "field_to_match": {
+                  "body": {}
+                },
+                "text_transformation": [
+                  {
+                    "priority": 0,
+                    "type": "URL_DECODE"
+                  }
+                ]
+              }
+            },
+            "action": {
+              "block": {}
+            },
+            "visibility_config": {
+              "sampled_requests_enabled": true,
+              "cloudwatch_metrics_enabled": true,
+              "metric_name": "XSSProtection"
+            }
+          }
+        ]
+      }
+    },
+    "logging_and_monitoring": {
+      "cloudtrail": {
+        "enabled": true,
+        "s3_bucket": "pulsex-cloudtrail-logs",
+        "log_file_validation": true,
+        "include_global_service_events": true,
+        "is_multi_region_trail": true,
+        "enable_log_file_validation": true,
+        "kms_key_id": "alias/pulsex-cloudtrail-key"
+      },
+      "config": {
+        "enabled": true,
+        "recording_group": {
+          "all_supported": true,
+          "include_global_resource_types": true
+        },
+        "delivery_channel": {
+          "s3_bucket_name": "pulsex-config-logs",
+          "s3_key_prefix": "config/"
+        }
+      },
+      "guardduty": {
+        "enabled": true,
+        "datasources": {
+          "s3_logs": {
+            "enable": true
+          },
+          "kubernetes": {
+            "audit_logs": {
+              "enable": true
+            }
+          }
+        }
+      },
+      "security_hub": {
+        "enabled": true,
+        "standards": [
+          "aws-foundational-security-best-practices",
+          "cis-aws-foundations-benchmark",
+          "pci-dss"
+        ]
+      }
+    },
+    "compliance": {
+      "standards": ["SOC2", "HIPAA", "GDPR", "PCI-DSS"],
+      "encryption": {
+        "encryption_at_rest": {
+          "databases": true,
+          "s3_buckets": true,
+          "ebs_volumes": true,
+          "lambda_environment": true
+        },
+        "encryption_in_transit": {
+          "all_traffic": true,
+          "internal_services": true
+        },
+        "key_management": {
+          "kms_key_rotation": true,
+          "key_usage_policy": "strict"
+        }
+      },
+      "data_protection": {
+        "pii_detection": true,
+        "data_classification": true,
+        "data_retention_policy": {
+          "logs": "90 days",
+          "audit_logs": "1 year",
+          "user_data": "7 years"
+        }
+      }
+    },
+    "backup_and_disaster_recovery": {
+      "rds_backup": {
+        "backup_retention_period": 30,
+        "backup_window": "03:00-04:00",
+        "maintenance_window": "sun:04:00-sun:05:00",
+        "multi_az": true,
+        "point_in_time_recovery": true
+      },
+      "redis_backup": {
+        "backup_retention_period": 15,
+        "backup_window": "06:00-07:00",
+        "automatic_failover": true
+      },
+      "cross_region_backup": {
+        "enabled": true,
+        "destination_region": "us-west-2",
+        "replication_frequency": "daily"
+      }
+    },
+    "incident_response": {
+      "automation": {
+        "alert_channels": [
+          "slack",
+          "email",
+          "pagerduty"
+        ],
+        "automatic_remediation": {
+          "enabled": true,
+          "rules": [
+            "block_malicious_ips",
+            "scale_infrastructure",
+            "backup_critical_data"
+          ]
+        }
+      },
+      "forensics": {
+        "log_retention": "1 year",
+        "packet_capture": true,
+        "memory_dump_collection": true
+      }
+    }
+  }
+}

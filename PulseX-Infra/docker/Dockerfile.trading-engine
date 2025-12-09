@@ -1,0 +1,250 @@
+# Multi-stage Dockerfile for PulseX Trading Engine
+# High-performance, secure, and optimized for production
+
+# Stage 1: Base image with system dependencies
+FROM node:18-alpine AS base
+LABEL maintainer="PulseX DevOps <devops@pulsex.com>"
+LABEL version="1.0.0"
+LABEL description="PulseX Trading Engine - High-frequency trading service"
+
+# Install system dependencies
+RUN apk add --no-cache \
+    curl \
+    dumb-init \
+    tini \
+    ca-certificates \
+    tzdata \
+    gcc \
+    g++ \
+    make \
+    python3 \
+    && rm -rf /var/cache/apk/*
+
+# Set timezone
+ENV TZ=UTC
+
+# Set work directory
+WORKDIR /app
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S pulsex -u 1001
+
+# Stage 2: Development/Builder stage
+FROM base AS development
+ENV NODE_ENV=development
+
+# Copy package files
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# Install all dependencies (including devDependencies)
+RUN npm ci --include=dev && npm cache clean --force
+
+# Copy source code
+COPY src/ ./src/
+COPY config/ ./config/
+
+# Build the application
+RUN npm run build
+
+# Expose development port
+EXPOSE 4000
+
+# Health check for development
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:4000/health || exit 1
+
+# Development command
+USER pulsex
+CMD ["dumb-init", "npm", "run", "dev"]
+
+# Stage 3: Dependencies installation
+FROM base AS dependencies
+ENV NODE_ENV=production
+
+# Copy package files
+COPY package*.json ./
+
+# Install only production dependencies
+RUN npm ci --only=production --no-optional && \
+    npm cache clean --force && \
+    npm dedupe
+
+# Stage 4: Performance optimization
+FROM development AS performance
+
+# Run performance benchmarks
+RUN npm run benchmark
+
+# Profile memory usage
+RUN npm run profile:memory
+
+# Optimize bundle size
+RUN npm run optimize
+
+# Stage 5: Production build
+FROM base AS production
+ENV NODE_ENV=production
+
+# Copy production dependencies
+COPY --from=dependencies --chown=pulsex:nodejs /app/node_modules ./node_modules
+
+# Copy built application
+COPY --from=development --chown=pulsex:nodejs /app/dist ./dist
+
+# Copy configuration files
+COPY --chown=pulsex:nodejs package*.json ./
+COPY --chown=pulsex:nodejs tsconfig.json ./
+COPY --chown=pulsex:nodejs config/ ./config/
+
+# Create logs directory
+RUN mkdir -p /app/logs && chown pulsex:nodejs /app/logs
+
+# Create data directory for trading data
+RUN mkdir -p /app/data && chown pulsex:nodejs /app/data
+
+# Set environment variables for production
+ENV NODE_ENV=production
+ENV PORT=4000
+ENV PM2_HOME=/app/.pm2
+ENV TRADING_ENGINE_MODE=production
+ENV MEMORY_LIMIT=2048
+
+# Install PM2 for process management
+RUN npm install -g pm2
+
+# PM2 ecosystem file
+COPY --chown=pulsex:nodejs ecosystem.config.js .
+
+# Install trading-specific monitoring tools
+RUN npm install -g clinic
+
+# Expose port
+EXPOSE 4000
+
+# Health check for production
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:4000/api/trading/health || exit 1
+
+# Switch to non-root user
+USER pulsex
+
+# Production command with performance monitoring
+CMD ["dumb-init", "pm2-runtime", "start", "ecosystem.config.js"]
+
+# Stage 6: Load testing
+FROM development AS load-testing
+ENV NODE_ENV=test
+
+# Install load testing dependencies
+RUN npm install -g artillery
+
+# Copy load testing scripts
+COPY load-testing/ ./load-testing/
+
+# Run load tests
+RUN artillery run load-testing/trading-engine-load-test.yml
+
+# Stage 7: Security hardening
+FROM production AS hardened
+
+# Install security tools
+RUN apk add --no-cache \
+    openssl \
+    && rm -rf /var/cache/apk/*
+
+# Generate SSL certificates for secure trading communications
+RUN openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
+    -keyout /app/ssl/trading.key \
+    -out /app/ssl/trading.crt \
+    -subj "/C=US/ST=CA/L=San Francisco/O=PulseX/OU=Trading/CN=trading.pulsex.com" \
+    2>/dev/null || true
+
+# Create SSL directory
+RUN mkdir -p /app/ssl && chown pulsex:nodejs /app/ssl
+
+# Set secure file permissions
+RUN chmod 600 /app/ssl/trading.key && \
+    chmod 644 /app/ssl/trading.crt
+
+# Install additional security packages
+RUN npm install helmet bcrypt jsonwebtoken --save
+
+# Stage 8: High-frequency optimization
+FROM hardened AS high-frequency
+
+# Install HFT-specific system dependencies
+RUN apk add --no-cache \
+    linux-headers \
+    musl-dev \
+    && rm -rf /var/cache/apk/*
+
+# Optimize Node.js for high-frequency trading
+ENV NODE_OPTIONS="--max-old-space-size=4096 --max-semi-space-size=128"
+ENV UV_THREADPOOL_SIZE=32
+
+# Install HFT-specific packages
+RUN npm install -g node-gyp
+
+# Compile native modules for performance
+RUN npm rebuild --runtime=node --target=18.0.0 --target_platform=linux --target_arch=x64
+
+# Stage 9: Real-time optimization
+FROM high-frequency AS realtime
+
+# Configure for real-time trading
+ENV REALTIME_ENGINE=true
+ENV WS_COMPRESSION=true
+ENV MARKET_DATA_CACHE_SIZE=10000
+
+# Copy WebSocket optimization scripts
+COPY --chown=pulsex:nodejs scripts/realtime-optimization.js ./scripts/
+
+# Run real-time optimization
+RUN node scripts/realtime-optimization.js
+
+# Stage 10: Risk management integration
+FROM realtime AS risk-management
+
+# Install risk management dependencies
+RUN npm install \
+    @types/lodash \
+    lodash \
+    moment \
+    big.js
+
+# Copy risk management configuration
+COPY --chown=pulsex:nodejs config/risk-management.json ./config/
+
+# Initialize risk management system
+RUN node scripts/init-risk-management.js
+
+# Final stage: Production ready trading engine
+FROM risk-management
+
+# Add metadata
+ARG BUILD_DATE
+ARG VERSION
+ARG VCS_REF
+
+LABEL org.label-schema.build-date=$BUILD_DATE \
+      org.label-schema.name="PulseX Trading Engine" \
+      org.label-schema.description="High-performance trading engine with risk management" \
+      org.label-schema.url="https://pulsex.com" \
+      org.label-schema.vcs-ref=$VCS_REF \
+      org.label-schema.vcs-url="https://github.com/company/pulsex" \
+      org.label-schema.vendor="PulseX" \
+      org.label-schema.version=$VERSION \
+      org.label-schema.schema-version="1.0"
+
+# Set production environment variables for trading
+ENV TRADING_MODE=production
+ENV RISK_MANAGEMENT_ENABLED=true
+ENV HIGH_FREQUENCY_TRADING=true
+ENV REAL_TIME_PROCESSING=true
+ENV MARKET_DATA_FEED=direct
+ENV ORDER_ROUTING=smart
+
+# Default command with full optimization
+CMD ["dumb-init", "pm2-runtime", "start", "ecosystem.config.js"]
