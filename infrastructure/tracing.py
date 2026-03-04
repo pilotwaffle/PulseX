@@ -178,13 +178,10 @@ class Tracer:
 
         # Initialize exporters
         if self.config.exporter_type == "otlp":
-            from tracing_imports import OTLPExporter
             self._exporters.append(OTLPExporter(self.config.exporter_endpoint))
         elif self.config.exporter_type == "jaeger":
-            from tracing_imports import JaegerExporter
             self._exporters.append(JaegerExporter(self.config.exporter_endpoint))
         else:
-            from tracing_imports import ConsoleExporter
             self._exporters.append(ConsoleExporter())
 
     def start_span(

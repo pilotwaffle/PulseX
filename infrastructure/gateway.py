@@ -18,11 +18,18 @@ import redis.asyncio as redis
 from contextlib import asynccontextmanager
 import logging
 
-from .rate_limit import RateLimiter, RateLimitConfig, RateLimitError
-from .security import SecurityMiddleware, APIKeyValidator
-from .cache import CacheManager
-from .tracing import TracingMiddleware
-from .health import HealthChecker
+try:
+    from .rate_limit import RateLimiter, RateLimitConfig, RateLimitError
+    from .security import SecurityMiddleware, APIKeyValidator
+    from .cache import CacheManager, CacheConfig
+    from .tracing import TracingMiddleware
+    from .health import HealthChecker
+except ImportError:
+    from rate_limit import RateLimiter, RateLimitConfig, RateLimitError
+    from security import SecurityMiddleware, APIKeyValidator
+    from cache import CacheManager, CacheConfig
+    from tracing import TracingMiddleware
+    from health import HealthChecker
 
 
 logger = logging.getLogger(__name__)
@@ -216,8 +223,12 @@ class TORQGateway:
         # Initialize security
         self.security = SecurityMiddleware()
 
-        # Initialize cache
-        self.cache = CacheManager(redis_url=redis_url) if enable_cache else None
+        # Initialize cache with proper config
+        if enable_cache:
+            cache_config = CacheConfig(redis_url=redis_url)
+            self.cache = CacheManager(config=cache_config)
+        else:
+            self.cache = None
 
         # Initialize health checker
         self.health_checker = HealthChecker(redis_url=redis_url)
@@ -422,5 +433,5 @@ def create_gateway(
     return gateway.create_app()
 
 
-# Default application instance
-gateway_app = create_gateway()
+# Don't initialize gateway_app at module level to avoid import issues
+# gateway_app = create_gateway()

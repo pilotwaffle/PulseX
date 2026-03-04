@@ -12,10 +12,17 @@ from contextlib import asynccontextmanager
 import os
 from datetime import datetime
 
-from .gateway import TORQGateway, create_gateway
-from .rate_limit import RateLimiter, RateLimitConfig
-from .security import SecurityMiddleware, SecurityLevel
-from .health import HealthChecker, HealthStatus
+# Handle both relative and absolute imports
+try:
+    from .gateway import TORQGateway, create_gateway
+    from .rate_limit import RateLimiter, RateLimitConfig
+    from .security import SecurityMiddleware, SecurityLevel
+    from .health import HealthChecker, HealthStatus
+except ImportError:
+    from gateway import TORQGateway, create_gateway
+    from rate_limit import RateLimiter, RateLimitConfig
+    from security import SecurityMiddleware, SecurityLevel
+    from health import HealthChecker, HealthStatus
 
 
 # Initialize infrastructure components
