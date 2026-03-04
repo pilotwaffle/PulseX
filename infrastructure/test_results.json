@@ -1,0 +1,412 @@
+{
+  "summary": {
+    "total_tests": 57,
+    "passed": 36,
+    "failed": 21,
+    "skipped": 0,
+    "pass_rate": 63.1578947368421,
+    "duration_seconds": 72.87675476074219,
+    "timestamp": "2026-03-04T23:09:52.764693+00:00"
+  },
+  "results": [
+    {
+      "module": "cache",
+      "name": "CacheManager initialization",
+      "passed": true,
+      "duration_ms": 62.462568283081055,
+      "error": ""
+    },
+    {
+      "module": "cache",
+      "name": "Cache fallback when Redis unavailable",
+      "passed": true,
+      "duration_ms": 4101.8805503845215,
+      "error": ""
+    },
+    {
+      "module": "cache",
+      "name": "Cache set and get with fallback",
+      "passed": true,
+      "duration_ms": 4100.057125091553,
+      "error": ""
+    },
+    {
+      "module": "cache",
+      "name": "Cache entry expiration",
+      "passed": false,
+      "duration_ms": 0.058650970458984375,
+      "error": "can't subtract offset-naive and offset-aware datetimes"
+    },
+    {
+      "module": "cache",
+      "name": "Cache invalidation by tag",
+      "passed": true,
+      "duration_ms": 4099.355936050415,
+      "error": ""
+    },
+    {
+      "module": "cache",
+      "name": "Cache get_or_set pattern",
+      "passed": true,
+      "duration_ms": 4085.685968399048,
+      "error": ""
+    },
+    {
+      "module": "cache",
+      "name": "Cache flush all entries",
+      "passed": true,
+      "duration_ms": 4093.4765338897705,
+      "error": ""
+    },
+    {
+      "module": "tracing",
+      "name": "Tracer initialization",
+      "passed": false,
+      "duration_ms": 1166.214942932129,
+      "error": "attempted relative import with no known parent package"
+    },
+    {
+      "module": "tracing",
+      "name": "Span creation with trace_id",
+      "passed": false,
+      "duration_ms": 0.5548000335693359,
+      "error": "attempted relative import with no known parent package"
+    },
+    {
+      "module": "tracing",
+      "name": "Required span name: api.request",
+      "passed": false,
+      "duration_ms": 0.5075931549072266,
+      "error": "attempted relative import with no known parent package"
+    },
+    {
+      "module": "tracing",
+      "name": "Required span name: agent.reason",
+      "passed": false,
+      "duration_ms": 0.3781318664550781,
+      "error": "attempted relative import with no known parent package"
+    },
+    {
+      "module": "tracing",
+      "name": "Required span name: agent.retrieve",
+      "passed": false,
+      "duration_ms": 0.29969215393066406,
+      "error": "attempted relative import with no known parent package"
+    },
+    {
+      "module": "tracing",
+      "name": "Required span name: agent.act",
+      "passed": false,
+      "duration_ms": 0.3902912139892578,
+      "error": "attempted relative import with no known parent package"
+    },
+    {
+      "module": "tracing",
+      "name": "Required span name: agent.evaluate",
+      "passed": false,
+      "duration_ms": 0.3108978271484375,
+      "error": "attempted relative import with no known parent package"
+    },
+    {
+      "module": "tracing",
+      "name": "Required span name: database.query",
+      "passed": false,
+      "duration_ms": 0.32019615173339844,
+      "error": "attempted relative import with no known parent package"
+    },
+    {
+      "module": "tracing",
+      "name": "Required span name: redis.lookup",
+      "passed": false,
+      "duration_ms": 0.2753734588623047,
+      "error": "attempted relative import with no known parent package"
+    },
+    {
+      "module": "tracing",
+      "name": "Span ID propagation",
+      "passed": false,
+      "duration_ms": 0.29778480529785156,
+      "error": "attempted relative import with no known parent package"
+    },
+    {
+      "module": "tracing",
+      "name": "Span duration calculation",
+      "passed": false,
+      "duration_ms": 0.27251243591308594,
+      "error": "attempted relative import with no known parent package"
+    },
+    {
+      "module": "tracing",
+      "name": "Span attributes and events",
+      "passed": false,
+      "duration_ms": 0.2865791320800781,
+      "error": "attempted relative import with no known parent package"
+    },
+    {
+      "module": "tracing",
+      "name": "Span error status",
+      "passed": false,
+      "duration_ms": 0.3142356872558594,
+      "error": "attempted relative import with no known parent package"
+    },
+    {
+      "module": "rate_limit",
+      "name": "RateLimiter initialization",
+      "passed": true,
+      "duration_ms": 1.0733604431152344,
+      "error": ""
+    },
+    {
+      "module": "rate_limit",
+      "name": "Public API tier: 60 req/min",
+      "passed": false,
+      "duration_ms": 4092.26393699646,
+      "error": ""
+    },
+    {
+      "module": "rate_limit",
+      "name": "Admin tier: 20 req/min",
+      "passed": false,
+      "duration_ms": 4095.325231552124,
+      "error": ""
+    },
+    {
+      "module": "rate_limit",
+      "name": "MCP tier: 120 req/min",
+      "passed": false,
+      "duration_ms": 4099.136114120483,
+      "error": ""
+    },
+    {
+      "module": "rate_limit",
+      "name": "Rate limit exceeded exception (with fallback)",
+      "passed": true,
+      "duration_ms": 2685.427188873291,
+      "error": ""
+    },
+    {
+      "module": "rate_limit",
+      "name": "Rate limit reset",
+      "passed": true,
+      "duration_ms": 4097.918748855591,
+      "error": ""
+    },
+    {
+      "module": "rate_limit",
+      "name": "Independent client limits",
+      "passed": true,
+      "duration_ms": 4106.126070022583,
+      "error": ""
+    },
+    {
+      "module": "rate_limit",
+      "name": "Fallback when Redis unavailable",
+      "passed": true,
+      "duration_ms": 2672.8219985961914,
+      "error": ""
+    },
+    {
+      "module": "security",
+      "name": "SecurityMiddleware initialization",
+      "passed": true,
+      "duration_ms": 389.22882080078125,
+      "error": ""
+    },
+    {
+      "module": "security",
+      "name": "API key generation",
+      "passed": true,
+      "duration_ms": 0.06437301635742188,
+      "error": ""
+    },
+    {
+      "module": "security",
+      "name": "API key verification",
+      "passed": true,
+      "duration_ms": 0.026464462280273438,
+      "error": ""
+    },
+    {
+      "module": "security",
+      "name": "API key validation",
+      "passed": true,
+      "duration_ms": 0.013113021850585938,
+      "error": ""
+    },
+    {
+      "module": "security",
+      "name": "API key expiration check",
+      "passed": true,
+      "duration_ms": 0.037670135498046875,
+      "error": ""
+    },
+    {
+      "module": "security",
+      "name": "Security level hierarchy",
+      "passed": true,
+      "duration_ms": 0.0171661376953125,
+      "error": ""
+    },
+    {
+      "module": "security",
+      "name": "Abuse detection (in-memory)",
+      "passed": false,
+      "duration_ms": 8327.332019805908,
+      "error": "Error 22 connecting to localhost:6379. The remote computer refused the network connection."
+    },
+    {
+      "module": "security",
+      "name": "IP blacklist (in-memory)",
+      "passed": false,
+      "duration_ms": 8166.295766830444,
+      "error": "Error 22 connecting to localhost:6379. The remote computer refused the network connection."
+    },
+    {
+      "module": "security",
+      "name": "IP whitelist",
+      "passed": false,
+      "duration_ms": 8192.940711975098,
+      "error": "Error 22 connecting to localhost:6379. The remote computer refused the network connection."
+    },
+    {
+      "module": "health",
+      "name": "HealthChecker initialization",
+      "passed": true,
+      "duration_ms": 183.83312225341797,
+      "error": ""
+    },
+    {
+      "module": "health",
+      "name": "HealthStatus enum values",
+      "passed": true,
+      "duration_ms": 0.001430511474609375,
+      "error": ""
+    },
+    {
+      "module": "health",
+      "name": "HealthCheckResult creation",
+      "passed": true,
+      "duration_ms": 0.008344650268554688,
+      "error": ""
+    },
+    {
+      "module": "health",
+      "name": "SystemHealthReport creation",
+      "passed": true,
+      "duration_ms": 0.009775161743164062,
+      "error": ""
+    },
+    {
+      "module": "health",
+      "name": "Database connectivity check",
+      "passed": true,
+      "duration_ms": 0.0095367431640625,
+      "error": ""
+    },
+    {
+      "module": "health",
+      "name": "LLM configuration check",
+      "passed": true,
+      "duration_ms": 0.0095367431640625,
+      "error": ""
+    },
+    {
+      "module": "health",
+      "name": "Supabase access check",
+      "passed": true,
+      "duration_ms": 0.0064373016357421875,
+      "error": ""
+    },
+    {
+      "module": "health",
+      "name": "Redis availability check",
+      "passed": true,
+      "duration_ms": 0.005245208740234375,
+      "error": ""
+    },
+    {
+      "module": "health",
+      "name": "Comprehensive health check",
+      "passed": false,
+      "duration_ms": 0.10657310485839844,
+      "error": "'SystemHealth' object has no attribute 'checks'"
+    },
+    {
+      "module": "resilience",
+      "name": "CircuitBreaker initialization",
+      "passed": true,
+      "duration_ms": 1.3685226440429688,
+      "error": ""
+    },
+    {
+      "module": "resilience",
+      "name": "CircuitBreaker opens after threshold",
+      "passed": true,
+      "duration_ms": 0.07939338684082031,
+      "error": ""
+    },
+    {
+      "module": "resilience",
+      "name": "CircuitBreaker prevents calls when OPEN",
+      "passed": true,
+      "duration_ms": 0.03314018249511719,
+      "error": ""
+    },
+    {
+      "module": "resilience",
+      "name": "ResilientRedis fallback when unavailable",
+      "passed": true,
+      "duration_ms": 0.006198883056640625,
+      "error": ""
+    },
+    {
+      "module": "resilience",
+      "name": "ResilientRedis pipeline fallback",
+      "passed": true,
+      "duration_ms": 0.017881393432617188,
+      "error": ""
+    },
+    {
+      "module": "resilience",
+      "name": "RetryConfig initialization",
+      "passed": true,
+      "duration_ms": 0.00286102294921875,
+      "error": ""
+    },
+    {
+      "module": "resilience",
+      "name": "with_retry decorator",
+      "passed": true,
+      "duration_ms": 50.026655197143555,
+      "error": ""
+    },
+    {
+      "module": "resilience",
+      "name": "with_fallback decorator",
+      "passed": true,
+      "duration_ms": 0.23031234741210938,
+      "error": ""
+    },
+    {
+      "module": "resilience",
+      "name": "with_circuit_breaker decorator",
+      "passed": true,
+      "duration_ms": 0.22912025451660156,
+      "error": ""
+    },
+    {
+      "module": "resilience",
+      "name": "FailureEvent creation and serialization",
+      "passed": true,
+      "duration_ms": 0.010967254638671875,
+      "error": ""
+    },
+    {
+      "module": "resilience",
+      "name": "FailureRecorder records events",
+      "passed": true,
+      "duration_ms": 0.04649162292480469,
+      "error": ""
+    }
+  ]
+}
